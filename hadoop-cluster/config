@@ -1,0 +1,11 @@
+CORE-SITE.XML_fs.defaultFS=hdfs://namenode:8020
+HDFS-SITE.XML_dfs.namenode.rpc-address=namenode:8020
+HDFS-SITE.XML_dfs.replication=2
+MAPRED-SITE.XML_mapreduce.framework.name=yarn
+YARN-SITE.XML_yarn.resourcemanager.hostname=resourcemanager
+YARN-SITE.XML_yarn.nodemanager.aux-services=mapreduce_shuffle
+YARN-SITE.XML_yarn.nodemanager.pmem-check-enabled=false
+YARN-SITE.XML_yarn.nodemanager.vmem-check-enabled=false
+YARN-SITE.XML_yarn.nodemanager.resource.memory-mb=4096
+YARN-SITE.XML_yarn.nodemanager.resource.cpu-vcores=2
+YARN-SITE.XML_yarn.scheduler.maximum-allocation-mb=4096

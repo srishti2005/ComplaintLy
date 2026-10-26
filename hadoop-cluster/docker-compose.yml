@@ -1,0 +1,30 @@
+x-hadoop: &hadoop
+  build: .
+  env_file: ./config
+
+services:
+  namenode:
+    <<: *hadoop
+    hostname: namenode
+    command: ["hdfs", "namenode"]
+    ports: ["9870:9870"]
+    environment:
+      ENSURE_NAMENODE_DIR: "/tmp/hadoop-hadoop/dfs/name"
+  datanode:
+    <<: *hadoop
+    command: ["hdfs", "datanode"]
+  resourcemanager:
+    <<: *hadoop
+    hostname: resourcemanager
+    command: ["yarn", "resourcemanager"]
+    ports: ["8088:8088"]
+  nodemanager:
+    <<: *hadoop
+    command: ["yarn", "nodemanager"]
+  client:
+    <<: *hadoop
+    command: ["tail", "-f", "/dev/null"]
+    volumes: ["./data:/data", "../bigdata:/jobs"]
+    environment:
+      HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+      PYSPARK_PYTHON: /opt/pyenv/bin/python

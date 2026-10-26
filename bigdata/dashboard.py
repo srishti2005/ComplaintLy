@@ -1,7 +1,9 @@
-import streamlit as st
+import os
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import streamlit as st
 
 
 # ============================================================
@@ -12,7 +14,7 @@ st.set_page_config(
     page_title="ComplaintLy Intelligence",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 
@@ -20,7 +22,8 @@ st.set_page_config(
 # CUSTOM CSS
 # ============================================================
 
-st.markdown("""
+st.markdown(
+    """
 <style>
 
     /* ---------- GLOBAL ---------- */
@@ -47,6 +50,29 @@ st.markdown("""
 
     section[data-testid="stSidebar"] * {
         color: #f9fafb !important;
+    }
+
+    /* Select box: white field with dark, readable text
+       (must come AFTER the sidebar "*" rule above) */
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
+        background-color: #ffffff !important;
+    }
+
+    section[data-testid="stSidebar"] div[data-baseweb="select"] span,
+    section[data-testid="stSidebar"] div[data-baseweb="select"] div,
+    section[data-testid="stSidebar"] div[data-baseweb="select"] input {
+        color: #111827 !important;
+        -webkit-text-fill-color: #111827 !important;
+    }
+
+    section[data-testid="stSidebar"] div[data-baseweb="select"] svg {
+        fill: #111827 !important;
+    }
+
+    /* Open dropdown list is rendered outside the sidebar */
+    div[data-baseweb="popover"] li,
+    div[data-baseweb="popover"] li * {
+        color: #111827 !important;
     }
 
 
@@ -133,95 +159,129 @@ st.markdown("""
     }
 
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
-# DATA PATHS
+# DATA LOCATION
+# ------------------------------------------------------------
+# Looks for the analytics_* Parquet folders in, in order:
+#   1. $DATA_BASE (environment variable), if set
+#   2. ./data/processed          (relative to where you run streamlit)
+#   3. <folder of this file>/data/processed
 # ============================================================
 
-BASE_PATH = "data/processed"
+DATASET_NAMES = [
+    "product",
+    "company",
+    "state",
+    "monthly",
+    "response",
+    "timely",
+    "issue",
+]
 
-PRODUCT_PATH = f"{BASE_PATH}/analytics_product"
-COMPANY_PATH = f"{BASE_PATH}/analytics_company"
-STATE_PATH = f"{BASE_PATH}/analytics_state"
-MONTHLY_PATH = f"{BASE_PATH}/analytics_monthly"
-RESPONSE_PATH = f"{BASE_PATH}/analytics_response"
-TIMELY_PATH = f"{BASE_PATH}/analytics_timely"
-ISSUE_PATH = f"{BASE_PATH}/analytics_issue"
+HERE = Path(__file__).resolve().parent
+
+
+def find_base():
+    candidates = []
+    env_base = os.getenv("DATA_BASE")
+    if env_base:
+        candidates.append(Path(env_base))
+    candidates.append(Path("data/processed"))
+    candidates.append(HERE / "data" / "processed")
+
+    for candidate in candidates:
+        if (candidate / "analytics_product").exists():
+            return candidate
+    return None, candidates
+
+
+_found = find_base()
+
+if not isinstance(_found, Path):
+    _, searched = _found
+    st.error("Analytics data not found.")
+    st.write("Looked for an `analytics_product` folder in:")
+    for c in searched:
+        st.code(str(c))
+    st.write(
+        "Run the Spark jobs, copy the `analytics_*` folders there, "
+        "or set the `DATA_BASE` environment variable to their location."
+    )
+    st.stop()
+
+BASE_PATH = _found
 
 
 # ============================================================
 # LOAD DATA
 # ============================================================
 
-@st.cache_data
-def load_data():
-
-    product = pd.read_parquet(PRODUCT_PATH)
-    company = pd.read_parquet(COMPANY_PATH)
-    state = pd.read_parquet(STATE_PATH)
-    monthly = pd.read_parquet(MONTHLY_PATH)
-    response = pd.read_parquet(RESPONSE_PATH)
-    timely = pd.read_parquet(TIMELY_PATH)
-    issue = pd.read_parquet(ISSUE_PATH)
-
-    return (
-        product,
-        company,
-        state,
-        monthly,
-        response,
-        timely,
-        issue
-    )
+@st.cache_data(show_spinner="Loading Parquet datasets...")
+def load_data(base: str):
+    data = {}
+    for name in DATASET_NAMES:
+        data[name] = pd.read_parquet(Path(base) / f"analytics_{name}")
+    return data
 
 
-(
-    product_df,
-    company_df,
-    state_df,
-    monthly_df,
-    response_df,
-    timely_df,
-    issue_df
-) = load_data()
+try:
+    data = load_data(str(BASE_PATH))
+except FileNotFoundError as exc:
+    st.error(f"Missing dataset folder: {exc}")
+    st.stop()
+
+product_raw = data["product"]
+company_raw = data["company"]
+state_raw = data["state"]
+monthly_df = data["monthly"].copy()
+response_raw = data["response"]
+timely_raw = data["timely"]
+issue_raw = data["issue"]
 
 
 # ============================================================
 # DATA PREPARATION
 # ============================================================
 
-monthly_df["Year"] = (
-    monthly_df["YearMonth"]
-    .astype(str)
-    .str[:4]
-    .astype(int)
-)
+monthly_df["YearMonth"] = monthly_df["YearMonth"].astype(str)
+monthly_df["Year"] = monthly_df["YearMonth"].str[:4].astype(int)
 
-years = sorted(
-    monthly_df["Year"].unique()
-)
+years = sorted(int(y) for y in monthly_df["Year"].unique())
 
-product_df = product_df.sort_values(
-    "complaint_count",
-    ascending=False
-)
 
-company_df = company_df.sort_values(
-    "complaint_count",
-    ascending=False
-)
+def year_col(df):
+    """Return the name of a 'year' column (any case), or None."""
+    for col in df.columns:
+        if col.lower() == "year":
+            return col
+    return None
 
-state_df = state_df.sort_values(
-    "complaint_count",
-    ascending=False
-)
 
-issue_df = issue_df.sort_values(
-    "complaint_count",
-    ascending=False
-)
+def prep(df, key):
+    """
+    Apply the sidebar year filter when the dataset has a year column,
+    then aggregate to one row per `key`, sorted by complaint_count.
+    Returns (dataframe, year_aware).
+
+    Datasets without a year column are returned unfiltered
+    (year_aware=False) and the UI says so.
+    """
+    yc = year_col(df)
+
+    if yc is None:
+        return df.sort_values("complaint_count", ascending=False), False
+
+    d = df
+    if selected_year != "All Years":
+        d = d[d[yc].astype(int) == int(selected_year)]
+
+    d = d.groupby(key, as_index=False)["complaint_count"].sum()
+    return d.sort_values("complaint_count", ascending=False), True
 
 
 # ============================================================
@@ -249,21 +309,21 @@ with st.sidebar:
         Intelligence Dashboard
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     st.markdown("### Dashboard Controls")
 
     selected_year = st.selectbox(
         "Select Year",
-        ["All Years"] + years
+        ["All Years"] + years,
     )
 
     top_n = st.slider(
         "Number of Items",
         min_value=5,
         max_value=15,
-        value=10
+        value=10,
     )
 
     st.markdown("---")
@@ -294,9 +354,68 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.caption(
-        "18.1M+ records processed using PySpark"
+    st.caption("18.1M+ records processed using PySpark")
+    st.caption(f"Data folder: {BASE_PATH}")
+
+
+# ============================================================
+# APPLY YEAR FILTER
+# ============================================================
+
+if selected_year == "All Years":
+    filtered_monthly = monthly_df.copy()
+else:
+    filtered_monthly = monthly_df[monthly_df["Year"] == selected_year].copy()
+
+product_df, product_aware = prep(product_raw, "Product")
+company_df, company_aware = prep(company_raw, "Company")
+state_df, state_aware = prep(state_raw, "State")
+issue_df, issue_aware = prep(issue_raw, "Issue")
+response_df, response_aware = prep(response_raw, "response")
+timely_df, timely_aware = prep(timely_raw, "timely_response")
+
+year_label = "All years" if selected_year == "All Years" else str(selected_year)
+
+
+def scope_note(aware):
+    """Tell the user when the year filter does not apply to a view."""
+    if selected_year != "All Years" and not aware:
+        st.caption(
+            "ℹ️ Showing all years: this dataset has no Year column yet. "
+            "Add Year to the Spark aggregation to enable the filter."
+        )
+
+
+def hbar(df, label_col, n, height=650, y_title=""):
+    """Horizontal bar chart of the top-n rows by complaint_count."""
+    if df.empty:
+        st.info("No data for the selected year.")
+        return
+
+    chart = df.head(n).sort_values("complaint_count")
+
+    fig = px.bar(
+        chart,
+        x="complaint_count",
+        y=label_col,
+        orientation="h",
+        text="complaint_count",
     )
+
+    fig.update_traces(
+        texttemplate="%{text:,.0f}",
+        textposition="outside",
+    )
+
+    fig.update_layout(
+        height=height,
+        template="plotly_white",
+        xaxis_title="Complaint Volume",
+        yaxis_title=y_title,
+        margin=dict(l=20, r=100, t=30, b=20),
+    )
+
+    st.plotly_chart(fig, width="stretch")
 
 
 # ============================================================
@@ -305,16 +424,15 @@ with st.sidebar:
 
 st.markdown(
     '<div class="dashboard-title">ComplaintLy Intelligence</div>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="dashboard-subtitle">'
-    'Large-Scale Consumer Complaint Analytics Platform'
-    '</div>',
-    unsafe_allow_html=True
+    "Large-Scale Consumer Complaint Analytics Platform"
+    "</div>",
+    unsafe_allow_html=True,
 )
-
 
 st.markdown(
     """
@@ -325,65 +443,48 @@ st.markdown(
     Spark SQL, and visualized through this dashboard.
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
-
-
-# ============================================================
-# FILTER MONTHLY DATA
-# ============================================================
-
-if selected_year == "All Years":
-
-    filtered_monthly = monthly_df.copy()
-
-else:
-
-    filtered_monthly = monthly_df[
-        monthly_df["Year"] == selected_year
-    ].copy()
 
 
 # ============================================================
 # KPI SECTION
+# ------------------------------------------------------------
+# Total complaints:
+#   - product data has a Year column  -> filtered product total
+#   - All Years                        -> product total
+#   - one year, no Year in product     -> monthly total for that year
 # ============================================================
 
-total_complaints = int(
-    product_df["complaint_count"].sum()
-)
+if product_aware or selected_year == "All Years":
+    total_complaints = int(product_df["complaint_count"].sum())
+else:
+    total_complaints = int(filtered_monthly["complaint_count"].sum())
 
 total_products = len(product_df)
-
 total_companies = len(company_df)
-
 total_states = len(state_df)
-
 
 st.markdown(
     '<div class="section-title">📌 Dataset Overview</div>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
-
 
 c1, c2, c3, c4 = st.columns(4)
 
-
 with c1:
-
     st.markdown(
         f"""
         <div class="kpi-card">
             <div class="kpi-label">Total Complaints</div>
             <div class="kpi-value">{total_complaints:,}</div>
-            <div class="kpi-description">Records processed</div>
+            <div class="kpi-description">Records processed ({year_label})</div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-
 with c2:
-
     st.markdown(
         f"""
         <div class="kpi-card">
@@ -392,12 +493,10 @@ with c2:
             <div class="kpi-description">Complaint categories</div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-
 with c3:
-
     st.markdown(
         f"""
         <div class="kpi-card">
@@ -406,12 +505,10 @@ with c3:
             <div class="kpi-description">Companies in analysis</div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-
 with c4:
-
     st.markdown(
         f"""
         <div class="kpi-card">
@@ -420,7 +517,7 @@ with c4:
             <div class="kpi-description">States in analysis</div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 
@@ -434,7 +531,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
         "📊 Products",
         "🏢 Companies",
         "🗺️ Geography",
-        "⏱️ Responses"
+        "⏱️ Responses",
     ]
 )
 
@@ -447,79 +544,76 @@ with tab1:
 
     st.markdown(
         '<div class="section-title">📈 Complaint Trend</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    filtered_monthly = filtered_monthly.sort_values(
-        "YearMonth"
-    )
+    filtered_monthly = filtered_monthly.sort_values("YearMonth")
 
-    fig = px.line(
-        filtered_monthly,
-        x="YearMonth",
-        y="complaint_count",
-        markers=True
-    )
+    if filtered_monthly.empty:
+        st.info("No monthly data for the selected year.")
+    else:
+        fig = px.line(
+            filtered_monthly,
+            x="YearMonth",
+            y="complaint_count",
+            markers=True,
+        )
 
-    fig.update_traces(
-        line=dict(width=3),
-        marker=dict(size=5)
-    )
+        fig.update_traces(
+            line=dict(width=3),
+            marker=dict(size=5),
+        )
 
-    fig.update_layout(
-        height=480,
-        template="plotly_white",
-        hovermode="x unified",
-        xaxis_title="Month",
-        yaxis_title="Complaint Volume",
-        margin=dict(l=20, r=20, t=20, b=20)
-    )
+        fig.update_layout(
+            height=480,
+            template="plotly_white",
+            hovermode="x unified",
+            xaxis_title="Month",
+            yaxis_title="Complaint Volume",
+            margin=dict(l=20, r=20, t=20, b=20),
+        )
 
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
-
+        st.plotly_chart(fig, width="stretch")
 
     st.markdown(
         '<div class="section-title">🔎 Quick Insights</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     q1, q2, q3 = st.columns(3)
 
-    top_product = product_df.iloc[0]
-
-    top_company = company_df.iloc[0]
-
-    top_state = state_df.iloc[0]
-
-
     with q1:
-
-        st.info(
-            f"**Highest complaint product**\n\n"
-            f"{top_product['Product']}\n\n"
-            f"**{int(top_product['complaint_count']):,} complaints**"
-        )
-
+        if product_df.empty:
+            st.info("No product data for the selected year.")
+        else:
+            top_product = product_df.iloc[0]
+            st.info(
+                f"**Highest complaint product**\n\n"
+                f"{top_product['Product']}\n\n"
+                f"**{int(top_product['complaint_count']):,} complaints**"
+            )
 
     with q2:
-
-        st.info(
-            f"**Highest complaint-volume company in the analyzed list**\n\n"
-            f"{top_company['Company']}\n\n"
-            f"**{int(top_company['complaint_count']):,} complaints**"
-        )
-
+        if company_df.empty:
+            st.info("No company data for the selected year.")
+        else:
+            top_company = company_df.iloc[0]
+            st.info(
+                f"**Highest complaint-volume company in the analyzed list**\n\n"
+                f"{top_company['Company']}\n\n"
+                f"**{int(top_company['complaint_count']):,} complaints**"
+            )
 
     with q3:
-
-        st.info(
-            f"**Highest complaint-volume state in the analyzed list**\n\n"
-            f"{top_state['State']}\n\n"
-            f"**{int(top_state['complaint_count']):,} complaints**"
-        )
+        if state_df.empty:
+            st.info("No state data for the selected year.")
+        else:
+            top_state = state_df.iloc[0]
+            st.info(
+                f"**Highest complaint-volume state in the analyzed list**\n\n"
+                f"{top_state['State']}\n\n"
+                f"**{int(top_state['complaint_count']):,} complaints**"
+            )
 
 
 # ============================================================
@@ -530,48 +624,18 @@ with tab2:
 
     st.markdown(
         '<div class="section-title">📊 Product Analysis</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    product_chart = (
-        product_df
-        .head(top_n)
-        .sort_values("complaint_count")
-    )
-
-    fig = px.bar(
-        product_chart,
-        x="complaint_count",
-        y="Product",
-        orientation="h",
-        text="complaint_count"
-    )
-
-    fig.update_traces(
-        texttemplate="%{text:,.0f}",
-        textposition="outside"
-    )
-
-    fig.update_layout(
-        height=650,
-        template="plotly_white",
-        xaxis_title="Complaint Volume",
-        yaxis_title="",
-        margin=dict(l=20, r=100, t=30, b=20)
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
-
+    scope_note(product_aware)
+    hbar(product_df, "Product", top_n)
 
     st.markdown("### Product Data")
 
     st.dataframe(
         product_df.head(top_n),
-        use_container_width=True,
-        hide_index=True
+        width="stretch",
+        hide_index=True,
     )
 
 
@@ -583,40 +647,11 @@ with tab3:
 
     st.markdown(
         '<div class="section-title">🏢 Company Analysis</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    company_chart = (
-        company_df
-        .head(top_n)
-        .sort_values("complaint_count")
-    )
-
-    fig = px.bar(
-        company_chart,
-        x="complaint_count",
-        y="Company",
-        orientation="h",
-        text="complaint_count"
-    )
-
-    fig.update_traces(
-        texttemplate="%{text:,.0f}",
-        textposition="outside"
-    )
-
-    fig.update_layout(
-        height=650,
-        template="plotly_white",
-        xaxis_title="Complaint Volume",
-        yaxis_title="",
-        margin=dict(l=20, r=100, t=30, b=20)
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+    scope_note(company_aware)
+    hbar(company_df, "Company", top_n)
 
     st.warning(
         "Complaint volume does not directly indicate company performance. "
@@ -632,40 +667,11 @@ with tab4:
 
     st.markdown(
         '<div class="section-title">🗺️ Geographic Analysis</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    state_chart = (
-        state_df
-        .head(top_n)
-        .sort_values("complaint_count")
-    )
-
-    fig = px.bar(
-        state_chart,
-        x="complaint_count",
-        y="State",
-        orientation="h",
-        text="complaint_count"
-    )
-
-    fig.update_traces(
-        texttemplate="%{text:,.0f}",
-        textposition="outside"
-    )
-
-    fig.update_layout(
-        height=600,
-        template="plotly_white",
-        xaxis_title="Complaint Volume",
-        yaxis_title="State",
-        margin=dict(l=20, r=100, t=30, b=20)
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+    scope_note(state_aware)
+    hbar(state_df, "State", top_n, height=600, y_title="State")
 
 
 # ============================================================
@@ -676,106 +682,71 @@ with tab5:
 
     st.markdown(
         '<div class="section-title">⏱️ Response Analysis</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
+
+    scope_note(timely_aware and response_aware)
 
     col1, col2 = st.columns(2)
 
-
     with col1:
+        if timely_df.empty:
+            st.info("No data for the selected year.")
+        else:
+            fig = px.pie(
+                timely_df,
+                names="timely_response",
+                values="complaint_count",
+                hole=0.55,
+            )
 
-        fig = px.pie(
-            timely_df,
-            names="timely_response",
-            values="complaint_count",
-            hole=0.55
-        )
+            fig.update_layout(
+                height=500,
+                template="plotly_white",
+                title="Timely Response Distribution",
+            )
 
-        fig.update_layout(
-            height=500,
-            template="plotly_white",
-            title="Timely Response Distribution"
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
+            st.plotly_chart(fig, width="stretch")
 
     with col2:
-
-        response_chart = (
-            response_df
-            .sort_values(
+        if response_df.empty:
+            st.info("No data for the selected year.")
+        else:
+            response_chart = response_df.sort_values(
                 "complaint_count",
-                ascending=True
+                ascending=True,
             )
-        )
 
-        fig = px.bar(
-            response_chart,
-            x="complaint_count",
-            y="response",
-            orientation="h",
-            text="complaint_count"
-        )
+            fig = px.bar(
+                response_chart,
+                x="complaint_count",
+                y="response",
+                orientation="h",
+                text="complaint_count",
+            )
 
-        fig.update_traces(
-            texttemplate="%{text:,.0f}",
-            textposition="outside"
-        )
+            fig.update_traces(
+                texttemplate="%{text:,.0f}",
+                textposition="outside",
+            )
 
-        fig.update_layout(
-            height=500,
-            template="plotly_white",
-            title="Company Response Distribution",
-            xaxis_title="Complaints",
-            yaxis_title="Response"
-        )
+            fig.update_layout(
+                height=500,
+                template="plotly_white",
+                title="Company Response Distribution",
+                xaxis_title="Complaints",
+                yaxis_title="Response",
+            )
 
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
+            st.plotly_chart(fig, width="stretch")
 
     st.markdown(
         '<div class="section-title">🔎 Top Complaint Issues</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    issue_chart = (
-        issue_df
-        .head(top_n)
-        .sort_values("complaint_count")
-    )
-
-    fig = px.bar(
-        issue_chart,
-        x="complaint_count",
-        y="Issue",
-        orientation="h",
-        text="complaint_count"
-    )
-
-    fig.update_traces(
-        texttemplate="%{text:,.0f}",
-        textposition="outside"
-    )
-
-    fig.update_layout(
-        height=650,
-        template="plotly_white",
-        xaxis_title="Complaint Volume",
-        yaxis_title="",
-        margin=dict(l=20, r=100, t=30, b=20)
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+    scope_note(issue_aware)
+    hbar(issue_df, "Issue", top_n)
 
 
 # ============================================================
@@ -790,5 +761,5 @@ st.markdown(
         Big Data Analytics Mini Project
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )

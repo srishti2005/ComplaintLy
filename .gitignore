@@ -14,3 +14,4 @@ instance/
 .env
 uploads/*
 !uploads/.gitkeep
+hadoop-cluster/data/
